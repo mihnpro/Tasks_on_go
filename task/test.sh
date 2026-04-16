@@ -54,7 +54,7 @@ curl_test() {
     local expected_code="$4"
     local description="$5"
 
-    echo -n "▶ $description... "
+    printf "▶ %s... " "$description" >&2
     response=$(curl -s -X "$method" "$API_URL$url" \
         -H "Content-Type: application/json" \
         -d "$data" \
@@ -64,13 +64,13 @@ curl_test() {
     body=$(echo "$response" | sed '$d')
 
     if [ "$http_code" -eq "$expected_code" ]; then
-        echo -e "${GREEN}OK${NC} (код $http_code)"
+        echo -e "${GREEN}OK${NC} (код $http_code)" >&2
         # Возвращаем тело ответа для дальнейшего использования
-        echo "$body"
+        printf "%s" "$body"
         return 0
     else
-        echo -e "${RED}ОШИБКА${NC} ожидался код $expected_code, получен $http_code"
-        echo "Ответ: $body"
+        echo -e "${RED}ОШИБКА${NC} ожидался код $expected_code, получен $http_code" >&2
+        echo "Ответ: $body" >&2
         return 1
     fi
 }
