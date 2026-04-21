@@ -29,7 +29,7 @@ for SIZE in "${SIZES[@]}"; do
             --metrics-file "results/${METRICS_PREFIX}_consumer.json" \
             --log-level warn &
         CONSUMER_PID=$!
-        
+        ц
         sleep 2
         
         ./bin/producer \

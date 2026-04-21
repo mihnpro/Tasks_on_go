@@ -15,6 +15,13 @@ import (
 	"github.com/spf13/pflag"
 )
 
+const (
+	// batchSize определяет, сколько сообщений накапливать перед отправкой пачкой.
+	// Для Redis это даёт значительный прирост производительности.
+	// Для RabbitMQ fallback сработает, и отправка останется последовательной.
+	batchSize = 500
+)
+
 var (
 	brokerType  = pflag.String("broker", "rabbitmq", "Broker type: rabbitmq or redis")
 	brokerURI   = pflag.String("uri", "amqp://guest:guest@localhost:5672/", "Broker connection URI")
@@ -56,14 +63,13 @@ func main() {
 	default:
 		logrus.Fatalf("Unknown broker type: %s", *brokerType)
 	}
-
 	if err != nil {
 		logrus.Fatalf("Failed to create broker: %v", err)
 	}
 	defer b.Close()
 
-	purgeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	purgeCtx, purgeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer purgeCancel()
 	if err := b.Purge(purgeCtx); err != nil {
 		logrus.WithError(err).Warn("Failed to purge queue")
 	} else {
@@ -74,31 +80,62 @@ func main() {
 	m := metrics.NewProducerMetrics()
 
 	logrus.WithFields(logrus.Fields{
-		"broker": *brokerType,
-		"queue":  *queueName,
-		"size":   *messageSize,
-		"rate":   *rate,
+		"broker":     *brokerType,
+		"queue":      *queueName,
+		"size":       *messageSize,
+		"rate":       *rate,
+		"batch_size": batchSize,
 	}).Info("Starting producer")
 
 	ticker := time.NewTicker(time.Second / time.Duration(*rate))
 	defer ticker.Stop()
 
+	// Буфер для накопления сообщений
+	buffer := make([][]byte, 0, batchSize)
+
+	// Функция сброса буфера
+	flushBuffer := func() {
+		if len(buffer) == 0 {
+			return
+		}
+		// Пытаемся отправить пачкой
+		err := b.PublishBatch(context.Background(), buffer)
+		if err != nil {
+			// Fallback: отправляем по одному (актуально для RabbitMQ)
+			for _, msg := range buffer {
+				if err := b.Publish(context.Background(), msg); err != nil {
+					m.RecordError()
+					logrus.WithError(err).Error("Failed to publish message (fallback)")
+				} else {
+					m.RecordSent()
+				}
+			}
+		} else {
+			// Успешная пакетная отправка
+			for range buffer {
+				m.RecordSent()
+			}
+		}
+		// Очищаем буфер, сохраняя capacity
+		buffer = buffer[:0]
+	}
+
 	start := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
+			// Сливаем оставшиеся сообщения
+			flushBuffer()
 			durationActual := time.Since(start)
 			logrus.Info("Producer finished")
 			saveMetrics(m, durationActual, *metricsFile)
 			return
+
 		case <-ticker.C:
 			msg := gen.Generate()
-			err := b.Publish(context.Background(), msg)
-			if err != nil {
-				m.RecordError()
-				logrus.WithError(err).Error("Failed to publish message")
-			} else {
-				m.RecordSent()
+			buffer = append(buffer, msg)
+			if len(buffer) >= batchSize {
+				flushBuffer()
 			}
 		}
 	}

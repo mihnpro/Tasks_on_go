@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ var (
 	duration    = pflag.Duration("duration", 30*time.Second, "Test duration")
 	metricsFile = pflag.String("metrics-file", "consumer_metrics.json", "File to write metrics")
 	logLevel    = pflag.String("log-level", "info", "Log level")
+	workers     = pflag.Int("workers", 5, "Number of concurrent consumer workers")
 )
 
 func main() {
@@ -60,34 +62,50 @@ func main() {
 	defer b.Close()
 
 	m := metrics.NewConsumerMetrics()
+	var mu sync.Mutex 
 
 	logrus.WithFields(logrus.Fields{
-		"broker": *brokerType,
-		"queue":  *queueName,
+		"broker":  *brokerType,
+		"queue":   *queueName,
+		"workers": *workers,
 	}).Info("Starting consumer")
 
-	err = b.Consume(ctx, func(data []byte) error {
-		parts := bytes.SplitN(data, []byte("|"), 2)
-		if len(parts) < 2 {
-			logrus.Warn("Message missing separator")
-			m.RecordReceived()
-			return nil
-		}
-		sentAt, err := time.Parse(time.RFC3339Nano, string(parts[0]))
-		if err != nil {
-			logrus.WithError(err).Warn("Failed to parse timestamp")
-		} else {
-			latency := time.Since(sentAt)
-			m.RecordLatency(latency)
-		}
-		m.RecordReceived()
-		return nil
-	})
-
-	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
-		logrus.WithError(err).Error("Consumer error")
+	// Запускаем несколько воркеров
+	var wg sync.WaitGroup
+	for i := 0; i < *workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			err := b.Consume(ctx, func(data []byte) error {
+				parts := bytes.SplitN(data, []byte("|"), 2)
+				if len(parts) < 2 {
+					logrus.WithField("worker", workerID).Warn("Message missing separator")
+					mu.Lock()
+					m.RecordReceived()
+					mu.Unlock()
+					return nil
+				}
+				sentAt, err := time.Parse(time.RFC3339Nano, string(parts[0]))
+				if err != nil {
+					logrus.WithError(err).WithField("worker", workerID).Warn("Failed to parse timestamp")
+				} else {
+					latency := time.Since(sentAt)
+					mu.Lock()
+					m.RecordLatency(latency)
+					mu.Unlock()
+				}
+				mu.Lock()
+				m.RecordReceived()
+				mu.Unlock()
+				return nil
+			})
+			if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+				logrus.WithError(err).WithField("worker", workerID).Error("Consumer error")
+			}
+		}(i)
 	}
 
+	wg.Wait()
 	logrus.Info("Consumer finished")
 	saveMetrics(m, *duration, *metricsFile)
 }

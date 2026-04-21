@@ -20,7 +20,6 @@ func NewRedisBroker(uri, queue string) (*RedisBroker, error) {
 	}
 	client := redis.NewClient(opts)
 
-	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {

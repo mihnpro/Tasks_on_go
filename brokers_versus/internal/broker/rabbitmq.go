@@ -103,7 +103,7 @@ func (r *RabbitMQBroker) Consume(ctx context.Context, handler func([]byte) error
 }
 
 func (r *RabbitMQBroker) PublishBatch(ctx context.Context, batch [][]byte) error {
-    return nil 
+	return fmt.Errorf("batch publish not implemented for RabbitMQ")
 }
 
 func (r *RabbitMQBroker) Purge(ctx context.Context) error {
