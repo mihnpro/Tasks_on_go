@@ -1,0 +1,42 @@
+services:
+  app:
+    build: .
+    container_name: cache_versus_app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis:6379
+      POSTGRES_DSN: postgres://cache_user:cache_pass@postgres:5432/cache_db?sslmode=disable
+    volumes:
+      - ./reports:/app/reports
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: cache_versus_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cache_versus_postgres
+    environment:
+      POSTGRES_USER: cache_user
+      POSTGRES_PASSWORD: cache_pass
+      POSTGRES_DB: cache_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cache_user -d cache_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
